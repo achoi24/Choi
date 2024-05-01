@@ -13,5 +13,7 @@ Project's I've completed along the way. Includes derivative models and in-house 
 
 - LSTM Neural Network: ACT499R: Machine Learning final project. Worked in tandem with my team to utilize academic research and create an LSTM NN that uses fundamental data to predict stock price at next quarterly earnings. Generates buy signal when predicted price is above current price and sell signal when predicted price is lower than current price. Coded in Python, neural network franework through Tensorflow Keras.
 
-- NBA Sports Betting Model....
+- NBA Sports Betting Model: TBA
+
+- Chop Trading Model: Long-Only technical based strategy primarily using Kaufman Adative Moving Average (limits noise/vol) and weekly Z-Score returns & other signals/points of confirmation. Grounded in theory of mean reversion. Model trades best during choppy market conditions (Q2 2020 - Q1 2023 returns 81% with 4 losses). However, does not take many trades during periods of strong momentum/trends (took only 8 trades 2023-Q12024) Working on getting this strategy automated.
 
