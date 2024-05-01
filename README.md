@@ -1,7 +1,9 @@
 # Achoi24
 2024 Emory University Graduate earning a BBA in Finance from Goizueta Business School. Interested in sell-side trading and quant positions, investment management, and options market making.
 Served as President of Algory Capital-- largest student-led multi-strategy quantitative investment club in the South East. First campus organization with authorization to trade derivatives at Emory University.
-2023 Truist Securities ST&R Institutional Equity Derivatives intern
+
+2023 Truist Securities ST&R Institutional Equity Derivatives intern.
+FX Futures and Equity CFDs Proprietary Trader @ FTMO
 
 LinkedIn: https://www.linkedin.com/in/asher-choi107/
 
