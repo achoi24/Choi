@@ -1,34 +1,64 @@
 import bql
 import pandas as pd
-from datetime import datetime
 
 bq = bql.Service()
 
-# --- Define universe: all SPX options ---
-opt_univ = bql.Univ("SPX Index", typ="OPT")
+# Example: pull SPX option chain with key fields
+query = """
+get(
+    id,
+    opt_expire_dt,
+    opt_strike_px,
+    opt_put_call,
+    px_last,
+    px_bid,
+    px_ask,
+    volume,
+    open_int,
+    impvol_mid,
+    delta_mid,
+    gamma_mid,
+    yest_close
+) for('SPX Index', type=OPT)
+"""
 
-# --- Define fields to pull ---
-fields = {
-    "bbg_ticker": bql.Function("id"),
-    "expiry":     bql.Function("opt_expire_dt"),
-    "strike":     bql.Function("opt_strike_px"),
-    "put_call":   bql.Function("opt_put_call"),
-    "px_last":    bql.Function("px_last"),
-    "px_bid":     bql.Function("px_bid"),
-    "px_ask":     bql.Function("px_ask"),
-    "volume":     bql.Function("volume"),
-    "open_int":   bql.Function("open_int"),
-    "iv_mid":     bql.Function("impvol_mid"),     # if missing, try "ivol_mid"
-    "delta_mid":  bql.Function("delta_mid"),      # alt: "opt_delta_mid"
-    "gamma_mid":  bql.Function("gamma_mid"),      # alt: "opt_gamma_mid"
-    "yest_close": bql.Function("yest_close"),
-}
-
-req = bql.Request(opt_univ, fields)
-res = bq.execute(req)
+res = bq.execute(query)
 df = res[0].df()
 
-# --- Compute Net = Last - YestClose ---
+# Compute Net = Last - YestClose
 df["net"] = df["px_last"] - df["yest_close"]
 
 df.head()
+
+from datetime import datetime
+
+def _format_expiry(d):
+    try:
+        return pd.to_datetime(d).strftime("%a %b %d %Y")
+    except Exception:
+        return str(d)
+
+def pivot_cboe(df):
+    calls = df[df["opt_put_call"].str.upper()=="CALL"].copy()
+    puts  = df[df["opt_put_call"].str.upper()=="PUT"].copy()
+
+    key = ["opt_expire_dt","opt_strike_px"]
+
+    c = calls[key + ["id","px_last","net","px_bid","px_ask","volume","impvol_mid","delta_mid","gamma_mid","open_int"]]
+    c.columns = key + ["Calls","Last Sale","Net","Bid","Ask","Volume","IV","Delta","Gamma","Open Interest"]
+
+    p = puts[key + ["id","px_last","net","px_bid","px_ask","volume","impvol_mid","delta_mid","gamma_mid","open_int"]]
+    p.columns = key + ["Puts","Last Sale","Net","Bid","Ask","Volume","IV","Delta","Gamma","Open Interest"]
+
+    merged = pd.merge(c, p, on=key, how="outer")
+    merged["Expiration Date"] = merged["opt_expire_dt"].apply(_format_expiry)
+
+    out_cols = [
+        "Expiration Date","Calls","Last Sale","Net","Bid","Ask","Volume","IV","Delta","Gamma","Open Interest",
+        "Puts","Last Sale","Net","Bid","Ask","Volume","IV","Delta","Gamma","Open Interest"
+    ]
+    return merged[out_cols]
+
+# Usage:
+cboe_df = pivot_cboe(df)
+cboe_df.head()
