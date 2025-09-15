@@ -1,0 +1,112 @@
+import pandas as pd
+from datetime import datetime
+
+UNDERLYING = "SPX Index"
+
+FIELD_MAP = {
+    "px_last": "PX_LAST",
+    "px_bid": "PX_BID",
+    "px_ask": "PX_ASK",
+    "volume": "VOLUME",
+    "open_int": "OPEN_INT",
+    "iv_mid": "IMPVOL_MID",      # adjust if needed: IVOL_MID, OPT_IMPLIED_VOLATILITY_MID
+    "delta_mid": "DELTA_MID",    # or OPT_DELTA_MID
+    "gamma_mid": "GAMMA_MID",    # or OPT_GAMMA_MID
+    "yest_close": "YEST_CLOSE",
+    "strike": "OPT_STRIKE_PX",
+    "put_call": "OPT_PUT_CALL",
+    "expiry": "OPT_EXPIRE_DT",
+    "ticker": "TICKER"
+}
+
+def _format_expiry(d):
+    if pd.isna(d):
+        return ""
+    try:
+        return pd.to_datetime(d).strftime("%a %b %d %Y")
+    except Exception:
+        return str(d)
+
+def _safe_net(px_last, yest_close):
+    try:
+        return float(px_last) - float(yest_close)
+    except Exception:
+        return 0.0
+
+def _pivot_calls_puts(df):
+    calls = df[df["put_call"].astype(str).str.upper().eq("CALL")].copy()
+    puts  = df[df["put_call"].astype(str).str.upper().eq("PUT")].copy()
+
+    key_cols = ["expiry","strike"]
+    call_cols = ["px_last","net","px_bid","px_ask","volume","iv_mid","delta_mid","gamma_mid","open_int"]
+    put_cols  = ["px_last","net","px_bid","px_ask","volume","iv_mid","delta_mid","gamma_mid","open_int"]
+
+    calls_small = calls[key_cols + ["bbg_ticker"] + call_cols].copy()
+    calls_small.columns = key_cols + ["Calls","Last Sale","Net","Bid","Ask","Volume","IV","Delta","Gamma","Open Interest"]
+
+    puts_small = puts[key_cols + ["bbg_ticker"] + put_cols].copy()
+    puts_small.columns = key_cols + ["Puts","Last Sale","Net","Bid","Ask","Volume","IV","Delta","Gamma","Open Interest"]
+
+    merged = pd.merge(calls_small, puts_small, on=key_cols, how="outer")
+    merged["Expiration Date"] = merged["expiry"].apply(_format_expiry)
+    merged = merged.sort_values(["expiry","strike"])
+    merged.drop(columns=["expiry"], inplace=True)
+
+    out_cols = [
+        "Expiration Date","Calls","Last Sale","Net","Bid","Ask","Volume","IV","Delta","Gamma","Open Interest",
+        "Puts","Last Sale","Net","Bid","Ask","Volume","IV","Delta","Gamma","Open Interest"
+    ]
+    return merged[out_cols]
+
+# -------------------------------------------------------------------
+# Main function to run inside Jupyter
+# -------------------------------------------------------------------
+def get_spx_options(backend="pdblp", out_csv=None):
+    """
+    backend: "pdblp" (needs Bloomberg Terminal open) or "bql" (inside BQuant)
+    out_csv: optional path to save CSV
+    returns: DataFrame of SPX option chain in CBOE-style format
+    """
+    if backend == "pdblp":
+        import pdblp
+        con = pdblp.BCon(timeout=30000)
+        con.start()
+
+        chain = con.ref(UNDERLYING, ["CHAIN_TICKERS"])
+        tickers = []
+        if "chain_tickers" in chain.columns:
+            for v in chain["chain_tickers"].dropna():
+                if isinstance(v, list):
+                    tickers.extend(v)
+                elif isinstance(v, str):
+                    tickers.append(v)
+
+        if not tickers:
+            raise RuntimeError("No option tickers returned — check entitlements or try backend='bql'")
+
+        fields = [FIELD_MAP[k] for k in ["px_last","px_bid","px_ask","volume","open_int",
+                                         "iv_mid","delta_mid","gamma_mid","yest_close",
+                                         "strike","put_call","expiry"]]
+        rows = []
+        for i in range(0, len(tickers), 300):
+            ref = con.ref(tickers[i:i+300], fields)
+            sub = ref.rename(columns={FIELD_MAP[k]: k for k in FIELD_MAP}).copy()
+            sub["bbg_ticker"] = sub.index
+            sub["net"] = [_safe_net(pl, yc) for pl, yc in zip(sub["px_last"], sub["yest_close"])]
+            rows.append(sub)
+        df = pd.concat(rows, ignore_index=True)
+
+    else:  # BQL inside BQuant
+        import bql
+        bq = bql.Service()
+        chain = bq.chains(UNDERLYING, "OPT")
+        fields = {k: bql.Function(FIELD_MAP[k]) for k in FIELD_MAP if k not in ["ticker"]}
+        fields["bbg_ticker"] = bql.Function("id()")
+        req = bql.Request(chain, fields)
+        df = bq.execute(req)[0].df()
+        df["net"] = df.apply(lambda r: _safe_net(r["px_last"], r["yest_close"]), axis=1)
+
+    out = _pivot_calls_puts(df)
+    if out_csv:
+        out.to_csv(out_csv, index=False)
+    return out
