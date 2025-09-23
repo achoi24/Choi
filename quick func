@@ -1,0 +1,496 @@
+“””
+Volatility Estimators from “Volatility Trading” by Euan Sinclair - Chapter 2
+Implementation of various volatility estimators discussed in the book.
+“””
+
+import numpy as np
+import pandas as pd
+from scipy.special import gamma
+from typing import Union, Optional
+import warnings
+
+class VolatilityEstimators:
+“””
+Implementation of volatility estimators from Sinclair’s “Volatility Trading” Chapter 2.
+All estimators return annualized volatility unless otherwise specified.
+“””
+
+```
+def __init__(self, annualization_factor: int = 252):
+    """
+    Initialize the volatility estimators.
+    
+    Parameters:
+    annualization_factor: Number of trading periods per year (default: 252 for daily data)
+    """
+    self.annualization_factor = annualization_factor
+
+def close_to_close(self, prices: np.ndarray, 
+                  adjust_bias: bool = True) -> float:
+    """
+    Close-to-close volatility estimator (Traditional method).
+    
+    Formula from book: σ = √(1/N * Σ(xi)²) where xi are log returns
+    
+    Parameters:
+    prices: Array of closing prices
+    adjust_bias: Whether to apply bias correction for small samples
+    
+    Returns:
+    Annualized volatility
+    """
+    if len(prices) < 2:
+        raise ValueError("Need at least 2 price points")
+        
+    # Calculate log returns
+    log_returns = np.log(prices[1:] / prices[:-1])
+    
+    # Sample variance (using N in denominator)
+    variance = np.mean(log_returns**2)
+    
+    # Convert to population variance estimate (N-1 correction)
+    N = len(log_returns)
+    variance = variance * N / (N - 1)
+    
+    # Apply bias correction for volatility estimate (Jensen's inequality)
+    if adjust_bias and N < 200:
+        # Correction factor from equation 2.6 in the book
+        b_n = np.sqrt(2 / N) * gamma(N/2) / gamma((N-1)/2)
+        variance = variance / (b_n**2)
+    
+    # Annualize
+    volatility = np.sqrt(variance * self.annualization_factor)
+    
+    return volatility
+
+def parkinson(self, high: np.ndarray, low: np.ndarray,
+              correct_bias: bool = True) -> float:
+    """
+    Parkinson volatility estimator using high-low range.
+    
+    Formula from book: σ = √(1/(4N*ln(2)) * Σ(ln(hi/li))²)
+    
+    Parameters:
+    high: Array of high prices for each period
+    low: Array of low prices for each period  
+    correct_bias: Whether to correct for discrete sampling bias
+    
+    Returns:
+    Annualized volatility
+    """
+    if len(high) != len(low):
+        raise ValueError("High and low arrays must have same length")
+    if len(high) < 1:
+        raise ValueError("Need at least 1 observation")
+        
+    # Calculate Parkinson estimator
+    N = len(high)
+    log_hl_ratio = np.log(high / low)
+    variance = np.mean(log_hl_ratio**2) / (4 * np.log(2))
+    
+    # Correct for discrete sampling bias (Table 2.3 in book)
+    if correct_bias:
+        # Approximation based on Table 2.3 - these are rough correction factors
+        if N <= 5:
+            correction = 1.0 / 0.55
+        elif N <= 10:
+            correction = 1.0 / 0.65
+        elif N <= 20:
+            correction = 1.0 / 0.74
+        elif N <= 50:
+            correction = 1.0 / 0.82
+        elif N <= 100:
+            correction = 1.0 / 0.86
+        else:
+            correction = 1.0 / 0.92
+        
+        variance *= correction
+    
+    # Annualize
+    volatility = np.sqrt(variance * self.annualization_factor)
+    
+    return volatility
+
+def garman_klass(self, high: np.ndarray, low: np.ndarray, 
+                close: np.ndarray, prev_close: np.ndarray,
+                correct_bias: bool = True) -> float:
+    """
+    Garman-Klass volatility estimator.
+    
+    Formula from book: 
+    σ = √(1/N * Σ[0.5*(ln(hi/li))² - (2*ln(2)-1)*(ln(ci/ci-1))²])
+    
+    Parameters:
+    high: Array of high prices
+    low: Array of low prices  
+    close: Array of close prices
+    prev_close: Array of previous close prices
+    correct_bias: Whether to correct for discrete sampling bias
+    
+    Returns:
+    Annualized volatility
+    """
+    if not all(len(arr) == len(high) for arr in [low, close, prev_close]):
+        raise ValueError("All price arrays must have same length")
+    if len(high) < 1:
+        raise ValueError("Need at least 1 observation")
+        
+    N = len(high)
+    
+    # Calculate components
+    hl_term = 0.5 * (np.log(high / low))**2
+    cc_term = (2 * np.log(2) - 1) * (np.log(close / prev_close))**2
+    
+    # Garman-Klass variance
+    variance = np.mean(hl_term - cc_term)
+    
+    # Correct for discrete sampling bias (Table 2.4 in book)
+    if correct_bias:
+        if N <= 5:
+            correction = 1.0 / 0.38
+        elif N <= 10:
+            correction = 1.0 / 0.51
+        elif N <= 20:
+            correction = 1.0 / 0.64
+        elif N <= 50:
+            correction = 1.0 / 0.73
+        elif N <= 100:
+            correction = 1.0 / 0.80
+        else:
+            correction = 1.0 / 0.85
+            
+        variance *= correction
+    
+    # Annualize
+    volatility = np.sqrt(variance * self.annualization_factor)
+    
+    return volatility
+
+def rogers_satchell(self, high: np.ndarray, low: np.ndarray,
+                   close: np.ndarray, open_price: np.ndarray) -> float:
+    """
+    Rogers-Satchell volatility estimator (handles drift).
+    
+    Formula from book: 
+    σ = √(1/N * Σ[ln(hi/ci)*ln(hi/oi) + ln(li/ci)*ln(li/oi)])
+    
+    Parameters:
+    high: Array of high prices
+    low: Array of low prices
+    close: Array of close prices
+    open_price: Array of open prices
+    
+    Returns:
+    Annualized volatility  
+    """
+    if not all(len(arr) == len(high) for arr in [low, close, open_price]):
+        raise ValueError("All price arrays must have same length")
+    if len(high) < 1:
+        raise ValueError("Need at least 1 observation")
+        
+    # Calculate Rogers-Satchell components
+    high_term = np.log(high / close) * np.log(high / open_price)
+    low_term = np.log(low / close) * np.log(low / open_price)
+    
+    # Rogers-Satchell variance
+    variance = np.mean(high_term + low_term)
+    
+    # Annualize
+    volatility = np.sqrt(variance * self.annualization_factor)
+    
+    return volatility
+
+def yang_zhang(self, high: np.ndarray, low: np.ndarray,
+              close: np.ndarray, open_price: np.ndarray,
+              prev_close: np.ndarray) -> float:
+    """
+    Yang-Zhang volatility estimator (handles both drift and opening jumps).
+    
+    Formula from book combines Rogers-Satchell, overnight, and open-to-close volatilities:
+    σ² = σ²_o + k*σ²_c + (1-k)*σ²_rs
+    where k = 0.34/(1 + (N+1)/(N-1))
+    
+    Parameters:
+    high: Array of high prices
+    low: Array of low prices  
+    close: Array of close prices
+    open_price: Array of open prices
+    prev_close: Array of previous close prices
+    
+    Returns:
+    Annualized volatility
+    """
+    if not all(len(arr) == len(high) for arr in [low, close, open_price, prev_close]):
+        raise ValueError("All price arrays must have same length")
+    if len(high) < 2:
+        raise ValueError("Need at least 2 observations")
+        
+    N = len(high)
+    
+    # Overnight volatility (close-to-open)
+    overnight_returns = np.log(open_price / prev_close)
+    sigma2_o = np.var(overnight_returns, ddof=1)  # Using N-1 denominator
+    
+    # Open-to-close volatility  
+    oc_returns = np.log(close / open_price)
+    sigma2_c = np.var(oc_returns, ddof=1)
+    
+    # Rogers-Satchell component (without annualization)
+    rs_high_term = np.log(high / close) * np.log(high / open_price)
+    rs_low_term = np.log(low / close) * np.log(low / open_price)
+    sigma2_rs = np.mean(rs_high_term + rs_low_term)
+    
+    # Yang-Zhang weighting factor
+    k = 0.34 / (1 + (N + 1) / (N - 1))
+    
+    # Combine components
+    variance = sigma2_o + k * sigma2_c + (1 - k) * sigma2_rs
+    
+    # Annualize
+    volatility = np.sqrt(variance * self.annualization_factor)
+    
+    return volatility
+
+def typical_move_estimator(self, returns: np.ndarray) -> float:
+    """
+    Estimator based on typical absolute moves (equation 2.11 in book).
+    Useful for intuitive understanding: σ ≈ average_daily_move * 20
+    
+    Formula: σ = 19.896 * (1/N * Σ|Rt|)
+    
+    Parameters:
+    returns: Array of returns (should be log returns)
+    
+    Returns:
+    Annualized volatility
+    """
+    if len(returns) < 1:
+        raise ValueError("Need at least 1 return")
+        
+    average_abs_return = np.mean(np.abs(returns))
+    
+    # From equation 2.12: E[|Rt|] = √(2/π) * σ
+    # So σ = √(π/2) * E[|Rt|] ≈ 1.2533 * E[|Rt|]  
+    # For daily data: annualized = 1.2533 * √252 ≈ 19.896
+    volatility = 19.896 * average_abs_return
+    
+    return volatility
+```
+
+def calculate_all_volatilities(df: pd.DataFrame,
+window: Optional[int] = None,
+annualization_factor: int = 252) -> pd.DataFrame:
+“””
+Calculate all volatility estimators for a DataFrame with OHLC data.
+
+```
+Parameters:
+df: DataFrame with columns ['open', 'high', 'low', 'last']
+window: Rolling window size. If None, uses entire dataset
+annualization_factor: Trading periods per year (252 for daily data)
+
+Returns:
+DataFrame with volatility estimates
+"""
+required_cols = ['open', 'high', 'low', 'last']
+if not all(col in df.columns for col in required_cols):
+    raise ValueError(f"DataFrame must contain columns: {required_cols}")
+
+if len(df) < 2:
+    raise ValueError("Need at least 2 rows of data")
+
+# Sort by index to ensure proper time order
+df = df.sort_index()
+
+estimator = VolatilityEstimators(annualization_factor)
+
+def calc_volatilities(data_slice):
+    """Calculate all volatility measures for a data slice."""
+    if len(data_slice) < 2:
+        return pd.Series([np.nan] * 6, index=[
+            'Close_to_Close', 'Parkinson', 'Garman_Klass', 
+            'Rogers_Satchell', 'Yang_Zhang', 'Typical_Move'
+        ])
+    
+    # Extract price arrays
+    high = data_slice['high'].values
+    low = data_slice['low'].values  
+    last = data_slice['last'].values  # Using 'last' as close price
+    open_price = data_slice['open'].values
+    
+    # Previous close (shift last prices by 1)
+    prev_close = np.concatenate([[last[0]], last[:-1]])
+    
+    results = {}
+    
+    try:
+        # Close-to-close (using 'last' as close)
+        results['Close_to_Close'] = estimator.close_to_close(last)
+    except:
+        results['Close_to_Close'] = np.nan
+        
+    try:
+        # Parkinson
+        results['Parkinson'] = estimator.parkinson(high, low)
+    except:
+        results['Parkinson'] = np.nan
+        
+    try:
+        # Garman-Klass
+        results['Garman_Klass'] = estimator.garman_klass(
+            high, low, last, prev_close)
+    except:
+        results['Garman_Klass'] = np.nan
+        
+    try:
+        # Rogers-Satchell  
+        results['Rogers_Satchell'] = estimator.rogers_satchell(
+            high, low, last, open_price)
+    except:
+        results['Rogers_Satchell'] = np.nan
+        
+    try:
+        # Yang-Zhang
+        results['Yang_Zhang'] = estimator.yang_zhang(
+            high, low, last, open_price, prev_close)
+    except:
+        results['Yang_Zhang'] = np.nan
+        
+    try:
+        # Typical move
+        returns = np.log(last[1:] / last[:-1])
+        results['Typical_Move'] = estimator.typical_move_estimator(returns)
+    except:
+        results['Typical_Move'] = np.nan
+        
+    return pd.Series(results)
+
+if window is None:
+    # Calculate for entire dataset
+    result = calc_volatilities(df)
+    return pd.DataFrame([result], index=['Full_Sample'])
+else:
+    # Rolling window calculation
+    return df.rolling(window=window, min_periods=2).apply(
+        lambda x: calc_volatilities(x), raw=False
+    ).dropna()
+```
+
+def demo_estimators():
+“””
+Demonstrate the volatility estimators with sample data matching your DataFrame structure.
+“””
+# Generate sample OHLC data with known volatility
+np.random.seed(42)
+n_days = 100
+annual_vol = 0.25  # 25% annual volatility
+daily_vol = annual_vol / np.sqrt(252)
+
+```
+# Generate price series
+returns = np.random.normal(0, daily_vol, n_days)
+log_prices = np.cumsum(returns) + np.log(100)  # Start at $100
+prices = np.exp(log_prices)
+
+# Create DataFrame with your column structure
+df = pd.DataFrame({
+    'last': prices,  # Using 'last' instead of 'close'
+    'open': np.concatenate([[100], prices[:-1]]),
+    'high': prices + np.abs(np.random.normal(0, daily_vol * 0.5, n_days)),
+    'low': prices - np.abs(np.random.normal(0, daily_vol * 0.5, n_days))
+})
+
+# Ensure proper OHLC relationships
+df['high'] = np.maximum(df['high'], np.maximum(df['last'], df['open']))
+df['low'] = np.minimum(df['low'], np.minimum(df['last'], df['open']))
+
+# Calculate all volatilities
+results = calculate_all_volatilities(df)
+
+# Display results
+print("Volatility Estimator Comparison")
+print("=" * 40)
+print(f"True Annual Volatility: {annual_vol:.1%}")
+print(f"Sample Size: {n_days} days")
+print("-" * 40)
+
+for method, vol in results.iloc[0].items():
+    if not np.isnan(vol):
+        error = (vol - annual_vol) / annual_vol * 100
+        print(f"{method:15s}: {vol:.1%} (error: {error:+.1f}%)")
+    else:
+        print(f"{method:15s}: Failed to calculate")
+```
+
+if **name** == “**main**”:
+# Run demonstration
+demo_estimators()
+
+```
+print("\n" + "="*60)
+print("DataFrame Usage Examples")
+print("="*60)
+
+# Example with DataFrame matching your structure
+sample_data = {
+    'open': [100.0, 102.0, 101.0, 103.0, 105.0, 104.0, 106.0, 105.0, 107.0, 108.0],
+    'high': [101.5, 103.2, 102.1, 104.5, 106.3, 105.1, 107.8, 106.5, 108.9, 109.2],
+    'low': [99.5, 101.8, 100.2, 102.3, 104.1, 103.2, 105.5, 104.1, 106.8, 107.3],
+    'last': [101.0, 102.5, 101.8, 104.2, 105.8, 104.7, 107.2, 105.9, 108.5, 108.8]
+}
+
+df = pd.DataFrame(sample_data)
+print("Sample DataFrame:")
+print(df.head())
+
+print("\n1. Calculate volatilities for entire sample:")
+print("-" * 45)
+all_vol = calculate_all_volatilities(df)
+print(all_vol.round(4))
+
+# Example with rolling window
+if len(df) >= 5:
+    print(f"\n2. Calculate 5-day rolling volatilities:")
+    print("-" * 45) 
+    rolling_vol = calculate_all_volatilities(df, window=5)
+    print(rolling_vol.tail().round(4))
+
+print(f"\n" + "="*60)
+print("How to use with your DataFrame:")
+print("="*60)
+print("""
+```
+
+# Assuming your DataFrame ‘df’ has columns: [‘open’, ‘high’, ‘low’, ‘last’]
+
+# 1. Calculate all volatility estimators for the full sample:
+
+vol_results = calculate_all_volatilities(df)
+print(vol_results)
+
+# 2. Calculate 30-day rolling volatilities:
+
+rolling_30d = calculate_all_volatilities(df, window=30)
+
+# 3. Get just the latest volatilities:
+
+latest_vols = rolling_30d.iloc[-1]
+print(f”Latest Yang-Zhang volatility: {latest_vols[‘Yang_Zhang’]:.2%}”)
+
+# 4. Compare different estimators:
+
+estimator_comparison = vol_results.T  # Transpose for easier reading
+print(estimator_comparison)
+
+# 5. For intraday data, adjust annualization factor:
+
+# (e.g., for hourly data: 252 * 6.5 = 1,638)
+
+intraday_vol = calculate_all_volatilities(df, annualization_factor=1638)
+“””)
+
+```
+print("\nNote: For reliable estimates, use at least 30-50 observations.")
+print("The Yang-Zhang estimator is generally preferred as it handles")
+print("both drift and opening gaps, as discussed in Sinclair's book.")
+```
