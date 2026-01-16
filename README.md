@@ -1,96 +1,152 @@
-# Achoi24
-2024 Emory University Graduate earning a BBA in Finance from Goizueta Business School. Interested in sell-side trading and quant positions, investment management, and options market making.
-Served as President of Algory Capital-- largest student-led multi-strategy quantitative investment club in the South East. First campus organization with authorization to trade derivatives at Emory University.
+# Vega P&L Projection Dashboard
 
-2023 Truist Securities ST&R Institutional Equity Derivatives intern.
-FX Futures and Equity CFDs Proprietary Trader @ FTMO
+An interactive dashboard for estimating implied volatility changes from spot movements and projecting P&L impacts across a portfolio of options positions.
 
-LinkedIn: https://www.linkedin.com/in/asher-choi107/
+## Overview
 
-Project's I've completed along the way. Includes derivative models and in-house tools for Algory Capital as well as class/personal work in machine learning and neural networks. 
+This dashboard allows you to:
 
-- Equity Options Gamma Exposure Model: used to identify concentration of gamma exposure based on held positions in the open market. Data provided by CBOE options chain. Model is used to see where banks, hedge funds, investment firms are hedging delta risk which can give indication on institutional order flow and positioning. Also can be used to identify pin risk in expiring positions. Coded in R.
+1. **Estimate IV Changes** - Model how implied volatility shifts when spot moves, accounting for:
+   - Spot/Vol correlation (beta)
+   - Skew dynamics (steepening/flattening)
+   - Term structure effects (front vs back month sensitivity)
 
-- LSTM Neural Network: ACT499R: Machine Learning final project. Worked in tandem with my team to utilize academic research and create an LSTM NN that uses fundamental data to predict stock price at next quarterly earnings. Generates buy signal when predicted price is above current price and sell signal when predicted price is lower than current price. Coded in Python, neural network franework through Tensorflow Keras.
+2. **Project P&L** - Calculate expected P&L from three components:
+   - **Vega P&L**: Direct impact from IV changes
+   - **Vanna P&L**: Cross-gamma effect (Vega sensitivity to spot)
+   - **Volga P&L**: Vol convexity (Vega sensitivity to IV)
 
-- NBA Sports Betting Model: TBA
+3. **Analyze Scenarios** - Compare P&L across multiple spot scenarios (-7.5% to +7.5%)
 
-- Chop Trading Model: Long-Only technical based strategy primarily using Kaufman Adative Moving Average (limits noise/vol) and weekly Z-Score returns & other signals/points of confirmation. Grounded in theory of mean reversion. Model trades best during choppy market conditions (Q2 2020 - Q1 2023 returns 81% with 4 losses). However, does not take many trades during periods of strong momentum/trends (took only 8 trades 2023-Q12024) Working on getting this strategy automated.
+## Installation
 
+```bash
+cd vega_dashboard
+pip install -r requirements.txt
+```
 
+## Usage
 
+### Running the Dashboard
 
-# ---------- CONFIG ----------
-contract_multiplier <- 100     # SPX multiplier
-scale_to_bil_per_1pct <- function(x) x / 1e9    # final y-units in $Bn per 1% move
-shock_vec <- c(-0.02, -0.01, -0.005, 0, 0.005, 0.01, 0.02)  # ±2%, ±1%, ±0.5%, 0
+```bash
+python dashboard.py
+```
 
-# ---------- TIME & RATE HELPERS ----------
-yearfrac_ACT365 <- function(t0, t1) as.numeric(as.Date(t1) - as.Date(t0)) / 365
+Then open http://127.0.0.1:8050 in your browser.
 
-# Try to use your existing calcGammaEx if present; else use local BS gamma
-.has_calcGammaEx <- exists("calcGammaEx", mode = "function")
+### Running Tests
 
-# ---------- BS GAMMA (per option) ----------
-bs_gamma <- function(S, K, sigma, T, r = 0, q = 0) {
-  if (any(sigma <= 0 | T <= 0)) return(rep(0, length(S)))
-  d1 <- (log(S/K) + (r - q + 0.5*sigma^2)*T) / (sigma*sqrt(T))
-  dens <- (1/sqrt(2*pi)) * exp(-0.5*d1^2)
-  dens / (S * sigma * sqrt(T))
-}
+```bash
+python test_engine.py
+```
 
-# Recompute per-row gamma * notional * OI (GEX) for either calls or puts
-row_gex <- function(side, S, K, iv, T, r, q, oi) {
-  if (.has_calcGammaEx) {
-    # use your implementation
-    return(calcGammaEx(S, K, iv, T, r, q, oi))
-  } else {
-    g <- bs_gamma(S, K, iv, T, r, q)
-    # GEX ≈ Γ * S^2 * contract_multiplier * OI
-    gex <- g * (S^2) * contract_multiplier * oi
-    # sign convention: calls +, puts +
-    # (use your own sign toggle elsewhere if desired)
-    return(gex)
-  }
-}
+### Using as a Library
 
-# Total GEX at a given spot (all expiries)
-total_gex_at_S <- function(dt, S, r = 0, q = 0) {
-  dt[, T := pmax(1e-6, yearfrac_ACT365(Sys.Date(), ExpirationDate))]
-  call_gex <- row_gex("C", S, dt$Strike, pmax(1e-6, dt$IVCall), dt$T, r, q, pmax(0, dt$OpenInterestCall))
-  put_gex  <- row_gex("P", S, dt$Strike, pmax(1e-6, dt$IVPut ), dt$T, r, q, pmax(0, dt$OpenInterestPut ))
-  sum(call_gex + put_gex, na.rm = TRUE)
-}
+```python
+from vega_dashboard import (
+    load_vega_grids,
+    create_pnl_engine,
+    IVModel,
+    DEFAULT_PARAMS,
+    SPOT_SCENARIOS
+)
 
-# Total GEX for a single expiry at a given spot
-expiry_gex_at_S <- function(dt_exp, S, r = 0, q = 0) {
-  dt <- copy(dt_exp)
-  dt[, T := pmax(1e-6, yearfrac_ACT365(Sys.Date(), unique(ExpirationDate)))]
-  call_gex <- row_gex("C", S, dt$Strike, pmax(1e-6, dt$IVCall), dt$T, r, q, pmax(0, dt$OpenInterestCall))
-  put_gex  <- row_gex("P", S, dt$Strike, pmax(1e-6, dt$IVPut ), dt$T, r, q, pmax(0, dt$OpenInterestPut ))
-  sum(call_gex + put_gex, na.rm = TRUE)
-}
+# Load your vega grids
+grids = load_vega_grids('/path/to/data/')
 
-# Find zero-gamma ("flip") by root finding on S
-solve_flip <- function(f, S0, lower_mult = 0.6, upper_mult = 1.4) {
-  lower <- max(1, S0 * lower_mult)
-  upper <- S0 * upper_mult
-  f_low <- f(lower); f_up <- f(upper)
-  if (is.na(f_low) || is.na(f_up) || f_low * f_up > 0) return(NA_real_)
-  uniroot(function(x) f(x), lower = lower, upper = upper)$root
-}
+# Create P&L engine
+engine = create_pnl_engine(grids, SPOT_SCENARIOS)
 
-# Pretty hover for plotly bars/points
-hover_gex <- function() {
-  paste0(
-    "<b>%{customdata[0]}</b><br>",
-    "Strike: %{x}<br>",
-    "GEX: %{y:.3f} Bn / 1%<extra></extra>"
-  )
-}
-hover_expiry <- function() {
-  paste0(
-    "<b>%{x}</b><br>",
-    "Total GEX: %{y:.3f} Bn / 1%<extra></extra>"
-  )
-}
+# Calculate P&L for a scenario
+result = engine.calculate_pnl('down_50', DEFAULT_PARAMS)
+
+print(f"Vega P&L: ${result.vega_pnl:,.0f}")
+print(f"Vanna P&L: ${result.vanna_pnl:,.0f}")
+print(f"Volga P&L: ${result.volga_pnl:,.0f}")
+print(f"Total P&L: ${result.total_pnl:,.0f}")
+```
+
+## Data Format
+
+Vega grids should be CSV files with:
+- **Rows**: Moneyness levels (K/S ratio, e.g., 0.90 = 10% OTM put)
+- **Columns**: Expiration dates
+- **Values**: Dollar vega at each strike/expiry
+
+Expected file naming convention:
+- `SPX_atm.csv` - Current (at-the-money) vega grid
+- `SPX_down_75.csv` - Vega grid if spot down 7.5%
+- `SPX_down_50.csv` - Vega grid if spot down 5%
+- `SPX_down_25.csv` - Vega grid if spot down 2.5%
+- `SPX_up_25.csv` - Vega grid if spot up 2.5%
+- `SPX_up_50.csv` - Vega grid if spot up 5%
+- `SPX_up_75.csv` - Vega grid if spot up 7.5%
+
+## Model Parameters
+
+### Spot/Vol Beta (β)
+- Controls the relationship between spot moves and ATM vol changes
+- Typical values: -2 to -5 for SPX
+- Example: β = -3 means 1% spot down → 3 vol point increase
+
+### Skew Factor
+- Controls how skew responds to spot moves
+- 0 = parallel vol shift (no skew dynamics)
+- \>0 = skew steepens on selloffs, flattens on rallies
+- <0 = inverted behavior (unusual)
+- Typical values: 0.5 to 1.5 for SPX
+
+### Term Structure Slope
+- Controls relative sensitivity of front vs back month
+- \>1 = front month moves more than back month
+- <1 = flatter response across tenors
+- 1 = proportional to sqrt(reference_tenor/DTE)
+
+### Volga Scalar
+- Controls magnitude of volga (vega convexity) effect
+- Higher values increase wing sensitivity to vol-of-vol
+- Typical values: 0.3 to 0.7
+
+## Architecture
+
+```
+vega_dashboard/
+├── config.py          # Default parameters and constants
+├── data_loader.py     # CSV parsing and data loading
+├── iv_model.py        # IV change estimation model
+├── greeks.py          # Vanna and volga calculations  
+├── pnl_engine.py      # P&L calculation engine
+├── dashboard.py       # Plotly Dash web application
+├── sample_data.py     # Embedded sample data
+├── test_engine.py     # Test suite
+└── requirements.txt   # Python dependencies
+```
+
+## Methodology
+
+### IV Change Estimation
+
+```
+ΔIV(K/S, τ) = ΔIV_ATM × skew_multiplier × term_adjustment
+
+Where:
+  ΔIV_ATM = β × (ΔS/S) × 100
+  skew_multiplier = 1 + skew_factor × (-sign(ΔS)) × (1 - K/S)
+  term_adjustment = (τ_ref / τ)^(term_slope/2)
+```
+
+### P&L Components
+
+```
+P&L_total = P&L_vega + P&L_vanna + P&L_volga
+
+Where:
+  P&L_vega  = Σ Vega × ΔIV
+  P&L_vanna = Σ Vanna × ΔS × ΔIV
+  P&L_volga = Σ 0.5 × Volga × (ΔIV)²
+```
+
+## License
+
+Proprietary - Internal use only.
